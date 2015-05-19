@@ -15,8 +15,6 @@
 # limitations under the License.
 #
 
- 
-
 import re
 import sys
 import getopt
@@ -51,6 +49,7 @@ class HadoopJobClass:
 		self.fail_redjobs=0
 		self.hdfs_read=0
 		self.hdfs_write=0
+		self.tasks=[]
 
 # All the times are in milliseconds.
 	def set_stime(self,t):
@@ -83,47 +82,77 @@ class HadoopJobClass:
 			return
 		self.jobid=jobid
 		return
+		
 	def set_hdfs_read(self,bread):
 			self.hdfs_read=bread;
 			return
+			
 	def set_hdfs_write(self,bread):
 			self.hdfs_write=bread;
 			return
+			
 	def set_fs_read(self,bread):
 			self.fs_read=bread;
 			return
+			
 	def set_fs_write(self,bread):
 			self.fs_write=bread;
+			return
+			
+	def add_task(self,task):
+			e=0;
+			for t in self.tasks:
+				if t.get_taskid() == task.get_taskid():
+					e=1;
+			if e == 0:
+				self.tasks.append(task);
 			return
 
 # Get methods
 
 	def get_stime(self):
 		return self.stime
+		
 	def get_etime(self):
 		return self.etime
+		
 	def get_status(self):
 		return self.status
+		
 	def get_jobid(self):
 		return self.jobid
 
 	def get_fin_mapjobs(self):
 		return self.fin_mapjobs
+		
 	def get_fail_mapjobs(self):
 		return self.fail_mapjobs
 
 	def get_fin_redjobs(self):
 		return self.fin_redjobs
+		
 	def get_fail_redjobs(self):
 		return self.fail_redjobs
+		
 	def get_hdfs_read(self):
 		return self.hdfs_read
+		
 	def get_hdfs_write(self):
 		return self.hdfs_write
+		
 	def get_fs_read(self):
 		return self.fs_read
+		
 	def get_fs_write(self):
 		return self.fs_write
+
+	def get_tasks(self):
+		return self.tasks
+		
+	def get_task(self,taskid):
+		for t in self.tasks:
+			if t.get_taskid() == taskid:
+				return t
 
 
 class taskAverage:
@@ -310,13 +339,71 @@ def print_average(tasks,avg):
 			avg.set_redtime(t.get_etime() - t.get_stime(),t.get_hdfs_read(),t.get_hdfs_write(),t.get_fs_read(),t.get_fs_write(),t.get_taskid())
 	return 
 			
-			
 def print_tasks(tasks):
-	t1=sorted(task,key=lambda x:x.stime)
+	t1=sorted(tasks,key=lambda x:x.stime)
 	print "Task Type,Status,hostname,Start Time, Sort Finish, Shuffle Finished, End Time, HDFS Bytes read,HDFS bytes written, File Bytes read, File Bytes written,Bytes Shuffled"
 	for t in t1:
 		if t.get_tstatus() == "SUCCESS":
 			print t.get_ttype(),",",t.get_tstatus(),",",t.get_hname(),",",t.get_stime(),",",t.get_sort_finished(),",",t.get_shuf_finished(),",",t.get_etime(),",",t.get_hdfs_read(),",",t.get_hdfs_write(),",",t.get_fs_read(),",",t.get_fs_write(),",",t.get_shuffle_bytes()
+
+use=[]
+def increment_usage(time):
+	if len(use) == 0:
+		use.append([])
+		use[0].append(time)
+		use[0].append(1)
+		return
+	idx=0
+	while idx < len(use) and use[idx][0] < time:
+		idx=idx+1
+
+	if idx >= len(use):
+		use.append([])
+		use[idx].append(time)
+		use[idx].append(use[idx-1][1] + 1)
+		return
+
+	if use[idx][0] == time:
+		use[idx][1]=use[idx][1]+1
+	else:
+		use.insert(idx,[])
+		use[idx].append(time)
+		use[idx].append(use[idx-1][1]+1)
+		idx=idx+1
+		while idx < len(use):
+			use[idx][1] = use[idx][1] + 1
+			idx=idx+1
+
+def decrement_usage(time):
+	idx=0;
+	while idx < len(use) and use[idx][0] < time:
+		idx=idx+1;
+	if idx >= len(use):
+		use.append([])
+		use[idx].append(time)
+		use[idx].append(use[idx-1][1] - 1)
+		return
+
+	if use[idx][0] == time:
+		use[idx][1]=use[idx][1]-1;
+	else:
+		use.insert(idx, [])
+		use[idx].append(time)
+		use[idx].append(use[idx-1][1]-1)
+		idx=idx+1;
+		while idx < len(use):
+			use[idx][1]=use[idx][1]-1;
+			idx=idx+1
+
+def print_tasks_usage(tasks):
+	sortedtasks=sorted(tasks,key=lambda x:x.stime)
+	for t in sortedtasks:
+		if t.get_tstatus() == "SUCCESS" and (t.get_ttype() == "MAP" or t.get_ttype() == "REDUCE"):
+			increment_usage(t.get_stime())
+			decrement_usage(t.get_etime())
+	for t in use:
+		print t[0]," = ", t[1]	
+	
 
 def print_fs_stats(tasks):
 	mhdfs_read=0
@@ -340,8 +427,7 @@ def print_fs_stats(tasks):
 			rfs_write+=t.get_fs_write()
 	return mhdfs_read,mhdfs_write,mfs_read,mfs_write,rhdfs_read,rhdfs_write,rfs_read,rfs_write
 		
-	
-task = []
+
 def parsefile(jfile):
 	lno=0
 	try:
@@ -360,21 +446,19 @@ def parsefile(jfile):
 			result = parsenamevalue(tasktype[1])
 			if result.has_key("TASK_ATTEMPT_ID"):
 				idx=result["TASK_ATTEMPT_ID"]
-				e=0
-				for t in task:
-					if idx in t.tid:
-						e=1
-				if e == 0:
+				t=job.get_task(idx)
+				if t==None:
 					t=tasks.taskclass()
-#					task[idx]=t
-					task.append(t)
 					t.set_taskid(idx)
-			tasklist= tasks.analyze_task(tasktype[0],result,t)
+					job.add_task(t)
+				tasks.analyze_task(tasktype[0],result,t)
 		elif tasktype[0] == "Task":
 			pass
 		else:
 			print >> sys.stderr, "Unknown Task", tasktype[0], " line numer =",lno
-	
+	return job
+
+def print_job_stats(job):
 	stime  = job.get_stime()
 	etime  = job.get_etime()
 	status = job.get_status()
@@ -386,7 +470,8 @@ def parsefile(jfile):
 	fmaps=job.get_fail_mapjobs()
 	sreds=job.get_fin_redjobs()
 	freds=job.get_fail_redjobs()
-	mhdfs_read,mhdfs_write,mfs_read,mfs_write,rhdfs_read,rhdfs_write,rfs_read,rfs_write=print_fs_stats(task)
+	tasks=job.get_tasks()
+	mhdfs_read,mhdfs_write,mfs_read,mfs_write,rhdfs_read,rhdfs_write,rfs_read,rfs_write=print_fs_stats(tasks)
 	print "Status =", status
 
 	if status == "SUCCESS":
@@ -405,11 +490,13 @@ def parsefile(jfile):
 		print "FS bytes read(map,reduce,total)      =",mfs_read,rfs_read,job.get_fs_read()
 		print "FS bytes Written(Map,Reduce,Total)   =",mfs_write,rfs_write,job.get_fs_write()
 	if verbose ==1:
-		print_tasks(task)
+		print_tasks(tasks)
+		print_tasks_usage(tasks)
 
 def main():
 	parseopts()
-	parsefile(jfile)
+	j=parsefile(jfile)
+	print_job_stats(j)
 	return 
 if __name__ == "__main__":
 	main()
